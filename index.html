@@ -233,6 +233,7 @@
                 peakLed.classList.remove('active');
 
                 function updateMeter() {
+                    console.log('updateMeter running');
                     if (!analyser || !audioElement || audioElement.paused) return;
 
                     analyser.getByteTimeDomainData(dataArray);
