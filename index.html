@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Scorpio Stream Meter</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; margin-top: 30px; }
+        #urlInput { width: 450px; padding: 8px; }
+        button { padding: 8px 16px; margin: 10px; }
+        #status { margin: 10px; color: #666; }
+
+        /* LED meter container */
+        #meterContainer {
+            display: flex;
+            justify-content: center;
+            margin: 20px auto;
+            gap: 4px;
+            background: #222;
+            padding: 10px;
+            border-radius: 8px;
+            width: fit-content;
+        }
+        .led {
+            width: 30px;
+            height: 50px;
+            background-color: #333;
+            border-radius: 4px;
+            transition: background-color 0.05s ease;
+        }
+        .led.green.on { background-color: #0f0; }
+        .led.yellow.on { background-color: #ff0; }
+        .led.red.on { background-color: #f00; }
+
+        /* Peak indicator */
+        #peakContainer {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            margin: 15px;
+        }
+        #peakLed {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background-color: #333;
+        }
+        #peakLed.active { background-color: #f00; }
+        #peakValue {
+            font-size: 20px;
+            font-weight: bold;
+            min-width: 80px;
+        }
+
+        #dbValue { font-size: 24px; margin: 10px; }
+        #clipIndicator {
+            display: inline-block;
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: gray;
+            line-height: 60px;
+            color: white;
+            font-weight: bold;
+            margin-top: 10px;
+        }
+        #clipIndicator.active { background: red; }
+    </style>
+</head>
+<body>
+    <h1>Scorpio Stream Meter</h1>
+    <button id="connectBtn">Connect</button>
+    <div id="status">Click Connect</div>
+
+    <!-- LED meter -->
+    <div id="meterContainer"></div>
+
+    <!-- Peak display -->
+    <div id="peakContainer">
+        <span>Peak:</span>
+        <div id="peakLed"></div>
+        <span id="peakValue">-∞ dB</span>
+    </div>
+
+    <div id="clipIndicator">CLIP</div>
+
+    <script>
+        const urlInput = document.getElementById('urlInput');
+        const connectBtn = document.getElementById('connectBtn');
+        const meterContainer = document.getElementById('meterContainer');
+        const peakLed = document.getElementById('peakLed');
+        const peakValue = document.getElementById('peakValue');
+        const clipIndicator = document.getElementById('clipIndicator');
+        const status = document.getElementById('status');
+
+        // Create 12 LEDs
+        const LED_COUNT = 12;
+        for (let i = 0; i < LED_COUNT; i++) {
+            const led = document.createElement('div');
+            led.className = 'led';
+            // Assign color class based on position
+            if (i < 7) led.classList.add('green');      // 0-6 green
+            else if (i < 10) led.classList.add('yellow'); // 7-9 yellow
+            else led.classList.add('red');               // 10-11 red
+            meterContainer.appendChild(led);
+        }
+        const leds = document.querySelectorAll('.led');
+
+        let audioContext = null;
+        let audioElement = null;
+        let source = null;
+        let analyser = null;
+        let animationFrame = null;
+        let isClipping = false;
+
+        // Peak hold variables
+        let peakDb = -100;           // current peak in dB
+        let peakTimeout = null;       // timeout to reset peak
+        const PEAK_HOLD_MS = 1000;    // hold peak for 1.5 seconds
+
+        const CLIP_THRESHOLD = 0.98;  // -1 dBFS
+
+        // Map dB to number of LEDs (range -30 dB to 0 dB)
+        function dbToLedCount(db) {
+            if (db <= -30) return 0;
+            if (db >= 0) return LED_COUNT;
+            return Math.floor((db + 30) / 30 * LED_COUNT);
+        }
+
+        // Update LED states based on current dB
+        function updateLEDs(db) {
+            const litCount = dbToLedCount(db);
+            for (let i = 0; i < LED_COUNT; i++) {
+                if (i < litCount) {
+                    leds[i].classList.add('on');
+                } else {
+                    leds[i].classList.remove('on');
+                }
+            }
+        }
+
+        // Update peak value and LED
+        function updatePeak(currentDb) {
+            if (currentDb > peakDb) {
+                peakDb = currentDb;
+                peakLed.classList.add('active');
+                peakValue.textContent = peakDb.toFixed(1) + ' dB';
+
+                // Clear previous timeout and set a new one
+                if (peakTimeout) clearTimeout(peakTimeout);
+                peakTimeout = setTimeout(() => {
+                    // Reset peak to current level after hold time
+                    peakDb = -100;
+                    peakValue.textContent = peakDb.toFixed(1) + ' dB';
+                    // If current level is very low, deactivate peak LED
+                    if (peakDb <= -50) peakLed.classList.remove('active');
+                    peakTimeout = null;
+                }, PEAK_HOLD_MS);
+            }
+        }
+
+        // Clean up resources
+        function stopStream() {
+            if (animationFrame) {
+                cancelAnimationFrame(animationFrame);
+                animationFrame = null;
+            }
+            if (audioElement) {
+                audioElement.pause();
+                audioElement.src = '';
+                audioElement = null;
+            }
+            if (source) {
+                source.disconnect();
+                source = null;
+            }
+            if (analyser) {
+                analyser.disconnect();
+                analyser = null;
+            }
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+            if (peakTimeout) {
+                clearTimeout(peakTimeout);
+                peakTimeout = null;
+            }
+            // Reset UI
+            updateLEDs(-100);
+            peakDb = -100;
+            peakValue.textContent = '-∞ dB';
+            peakLed.classList.remove('active');
+            clipIndicator.classList.remove('active');
+            isClipping = false;
+            status.textContent = 'Please wait for connection';
+        }
+
+        connectBtn.addEventListener('click', async () => {
+
+            stopStream();
+
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                await audioContext.resume();
+
+                audioElement = new Audio();
+                audioElement.crossOrigin = 'stream.radioscorpio.be';
+                audioElement.src = 'https://stream.radioscorpio.be/stream';
+                //##audioElement.src = 'kevin_MacLeod-Slow_Burn.mp3';
+                audioElement.loop = false;
+
+                source = audioContext.createMediaElementSource(audioElement);
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 256;
+                const bufferLength = analyser.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
+
+                source.connect(analyser);
+                analyser.connect(audioContext.destination);
+
+                audioElement.onerror = (e) => {
+                    const errorMsg = audioElement.error ? audioElement.error.message : 'CORS or network error';
+                    status.textContent = `Error: ${errorMsg}`;
+                    stopStream();
+                };
+
+                await audioElement.play();
+                status.textContent = 'Connected – streaming';
+                clipIndicator.classList.remove('active');
+                peakDb = -100;
+                peakValue.textContent = '-∞ dB';
+                peakLed.classList.remove('active');
+
+                function updateMeter() {
+                    if (!analyser || !audioElement || audioElement.paused) return;
+
+                    analyser.getByteTimeDomainData(dataArray);
+
+                    let sumSquares = 0;
+                    let peak = 0;
+                    for (let i = 0; i < bufferLength; i++) {
+                        const floatSample = (dataArray[i] - 128) / 128;
+                        sumSquares += floatSample * floatSample;
+                        const absSample = Math.abs(floatSample);
+                        if (absSample > peak) peak = absSample;
+                    }
+                    const rms = Math.sqrt(sumSquares / bufferLength);
+
+                    let db = -100;
+                    if (rms > 0) {
+                        db = 20 * Math.log10(rms);
+                    }
+                    db = Math.max(-100, Math.min(0, db));
+
+                    // Update UI
+                    updateLEDs(db);
+                    //dbValue.textContent = db.toFixed(1) + ' dB';
+                    updatePeak(db);
+
+                    // Clipping detection
+                    const clippingNow = peak > CLIP_THRESHOLD;
+                    if (clippingNow && !isClipping) {
+                        console.log(peak);
+                        clipIndicator.classList.add('active');
+                        isClipping = true;
+                    } else if (!clippingNow && isClipping) {
+                        clipIndicator.classList.remove('active');
+                        isClipping = false;
+                    }
+
+                    animationFrame = requestAnimationFrame(updateMeter);
+                }
+
+                // Start meter after a short buffer
+                setTimeout(() => {
+                    if (audioElement && !audioElement.paused) {
+                        updateMeter();
+                    }
+                }, 500);
+
+            } catch (err) {
+                status.textContent = `Failed: ${err.message}`;
+                stopStream();
+            }
+        });
+
+        window.addEventListener('beforeunload', stopStream);
+    </script>
+</body>
+</html>
