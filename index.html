@@ -275,6 +275,7 @@
 
                 // Start meter after a short buffer
                 setTimeout(() => {
+                    console.log('time-out running');
                     if (audioElement && !audioElement.paused) {
                         updateMeter();
                     }
