@@ -205,7 +205,7 @@
                 await audioContext.resume();
 
                 audioElement = new Audio();
-                audioElement.crossOrigin = 'stream.radioscorpio.be';
+                audioElement.crossOrigin = 'anonymous';
                 audioElement.src = 'https://stream.radioscorpio.be/stream';
                 //##audioElement.src = 'kevin_MacLeod-Slow_Burn.mp3';
                 audioElement.loop = false;
