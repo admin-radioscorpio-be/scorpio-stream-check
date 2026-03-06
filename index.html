@@ -233,7 +233,6 @@
                 peakLed.classList.remove('active');
 
                 function updateMeter() {
-                    console.log('updateMeter running');
                     if (!analyser || !audioElement || audioElement.paused) return;
 
                     analyser.getByteTimeDomainData(dataArray);
@@ -273,36 +272,8 @@
                     animationFrame = requestAnimationFrame(updateMeter);
                 }
 
-                // After audioElement is created and playing
-audioElement.addEventListener('playing', async () => {
-    try {
-        // Get the media stream from the audio element
-        const stream = audioElement.captureStream();
-        // Create a new source from the stream
-        const streamSource = audioContext.createMediaStreamSource(stream);
-        // Use the same analyser
-        streamSource.connect(analyser);
-        // Optionally connect to destination to hear it
-        analyser.connect(audioContext.destination);
-
-        status.textContent = 'Connected – streaming (captureStream)';
-        updateMeter();
-    } catch (err) {
-        console.error('captureStream failed:', err);
-        status.textContent = 'captureStream error – fallback to original method';
-        // fallback to original source if captureStream fails
-        source.connect(analyser);
-        analyser.connect(audioContext.destination);
-        updateMeter();
-    }
-});
-
-// Remove the original source.connect(analyser) line – we'll connect in the event.
-// But keep source created for potential fallback.
-
                 // Start meter after a short buffer
                 setTimeout(() => {
-                    console.log('time-out running');
                     if (audioElement && !audioElement.paused) {
                         updateMeter();
                     }
