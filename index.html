@@ -72,7 +72,7 @@
     <button id="connectBtn">Connect</button>
     <div id="status">Click Connect</div>
 
-    <!-- LED meter     -->
+    <!-- LED meter -->
     <div id="meterContainer"></div>
 
     <!-- Peak display -->
@@ -98,36 +98,33 @@
         for (let i = 0; i < LED_COUNT; i++) {
             const led = document.createElement('div');
             led.className = 'led';
-            // Assign color class based on position
-            if (i < 7) led.classList.add('green');      // 0-6 green
-            else if (i < 10) led.classList.add('yellow'); // 7-9 yellow
-            else led.classList.add('red');               // 10-11 red
+            if (i < 7) led.classList.add('green');
+            else if (i < 10) led.classList.add('yellow');
+            else led.classList.add('red');
             meterContainer.appendChild(led);
         }
         const leds = document.querySelectorAll('.led');
 
         let audioContext = null;
         let audioElement = null;
-        let source = null;
+        let source = null;          // original MediaElementAudioSourceNode
+        let streamSource = null;     // optional MediaStreamAudioSourceNode from captureStream
         let analyser = null;
         let animationFrame = null;
         let isClipping = false;
 
         // Peak hold variables
-        let peakDb = -100;           // current peak in dB
-        let peakTimeout = null;       // timeout to reset peak
-        const PEAK_HOLD_MS = 1000;    // hold peak for 1.5 seconds
+        let peakDb = -100;
+        let peakTimeout = null;
+        const PEAK_HOLD_MS = 1000;
+        const CLIP_THRESHOLD = 0.98;
 
-        const CLIP_THRESHOLD = 0.98;  // -1 dBFS
-
-        // Map dB to number of LEDs (range -30 dB to 0 dB)
         function dbToLedCount(db) {
             if (db <= -30) return 0;
             if (db >= 0) return LED_COUNT;
             return Math.floor((db + 30) / 30 * LED_COUNT);
         }
 
-        // Update LED states based on current dB
         function updateLEDs(db) {
             const litCount = dbToLedCount(db);
             for (let i = 0; i < LED_COUNT; i++) {
@@ -139,27 +136,22 @@
             }
         }
 
-        // Update peak value and LED
         function updatePeak(currentDb) {
             if (currentDb > peakDb) {
                 peakDb = currentDb;
                 peakLed.classList.add('active');
                 peakValue.textContent = peakDb.toFixed(1) + ' dB';
 
-                // Clear previous timeout and set a new one
                 if (peakTimeout) clearTimeout(peakTimeout);
                 peakTimeout = setTimeout(() => {
-                    // Reset peak to current level after hold time
                     peakDb = -100;
-                    peakValue.textContent = peakDb.toFixed(1) + ' dB';
-                    // If current level is very low, deactivate peak LED
-                    if (peakDb <= -50) peakLed.classList.remove('active');
+                    peakValue.textContent = '-∞ dB';
+                    peakLed.classList.remove('active');
                     peakTimeout = null;
                 }, PEAK_HOLD_MS);
             }
         }
 
-        // Clean up resources
         function stopStream() {
             if (animationFrame) {
                 cancelAnimationFrame(animationFrame);
@@ -174,6 +166,10 @@
                 source.disconnect();
                 source = null;
             }
+            if (streamSource) {
+                streamSource.disconnect();
+                streamSource = null;
+            }
             if (analyser) {
                 analyser.disconnect();
                 analyser = null;
@@ -186,7 +182,6 @@
                 clearTimeout(peakTimeout);
                 peakTimeout = null;
             }
-            // Reset UI
             updateLEDs(-100);
             peakDb = -100;
             peakValue.textContent = '-∞ dB';
@@ -197,7 +192,6 @@
         }
 
         connectBtn.addEventListener('click', async () => {
-
             stopStream();
 
             try {
@@ -207,7 +201,7 @@
                 audioElement = new Audio();
                 audioElement.crossOrigin = 'anonymous';
                 audioElement.src = 'https://stream.radioscorpio.be/stream';
-                // audioElement.src = 'kevin_MacLeod-Slow_Burn.mp3';
+                // audioElement.src = 'kevin_MacLeod-Slow_Burn.mp3'; // for testing
                 audioElement.loop = false;
 
                 source = audioContext.createMediaElementSource(audioElement);
@@ -216,6 +210,7 @@
                 const bufferLength = analyser.frequencyBinCount;
                 const dataArray = new Uint8Array(bufferLength);
 
+                // Initially connect the original source (will be replaced if captureStream works)
                 source.connect(analyser);
                 analyser.connect(audioContext.destination);
 
@@ -226,12 +221,46 @@
                 };
 
                 await audioElement.play();
-                status.textContent = 'Connected – streaming';
-                clipIndicator.classList.remove('active');
-                peakDb = -100;
-                peakValue.textContent = '-∞ dB';
-                peakLed.classList.remove('active');
 
+                // Use the 'playing' event to ensure the stream is actually active
+                const onPlaying = () => {
+                    audioElement.removeEventListener('playing', onPlaying);
+
+                    // Try captureStream() if available (Safari)
+                    if (audioElement.captureStream) {
+                        try {
+                            const stream = audioElement.captureStream();
+                            if (stream.getAudioTracks().length > 0) {
+                                // Disconnect the original source
+                                if (source) source.disconnect();
+                                // Create and connect the new stream source
+                                streamSource = audioContext.createMediaStreamSource(stream);
+                                streamSource.connect(analyser);
+                                status.textContent = 'Connected – streaming (captureStream)';
+                            } else {
+                                throw new Error('No audio tracks');
+                            }
+                        } catch (e) {
+                            console.warn('captureStream failed, using original source', e);
+                            status.textContent = 'Connected – streaming (original)';
+                        }
+                    } else {
+                        status.textContent = 'Connected – streaming';
+                    }
+
+                    // Start the meter
+                    updateMeter();
+                };
+
+                audioElement.addEventListener('playing', onPlaying);
+
+                // In case the 'playing' event already fired before we set the listener,
+                // check the current state.
+                if (!audioElement.paused && audioElement.readyState >= 3) { // HAVE_FUTURE_DATA or more
+                    onPlaying();
+                }
+
+                // The meter update function (unchanged)
                 function updateMeter() {
                     if (!analyser || !audioElement || audioElement.paused) return;
 
@@ -253,12 +282,9 @@
                     }
                     db = Math.max(-100, Math.min(0, db));
 
-                    // Update UI
                     updateLEDs(db);
-                    //dbValue.textContent = db.toFixed(1) + ' dB';
                     updatePeak(db);
 
-                    // Clipping detection
                     const clippingNow = peak > CLIP_THRESHOLD;
                     if (clippingNow && !isClipping) {
                         console.log(peak);
@@ -271,13 +297,6 @@
 
                     animationFrame = requestAnimationFrame(updateMeter);
                 }
-
-                // Start meter after a short buffer
-                setTimeout(() => {
-                    if (audioElement && !audioElement.paused) {
-                        updateMeter();
-                    }
-                }, 500);
 
             } catch (err) {
                 status.textContent = `Failed: ${err.message}`;
